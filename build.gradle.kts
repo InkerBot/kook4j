@@ -14,8 +14,7 @@ plugins {
 
 group = "bot.inker.kook4j"
 
-val buildNumber: String? = System.getenv("BUILD_NUMBER")
-version = if (buildNumber != null) "0.1.$buildNumber" else "0.1.0-SNAPSHOT"
+version = "0.1.0"
 
 java {
     sourceCompatibility = JavaVersion.VERSION_21
