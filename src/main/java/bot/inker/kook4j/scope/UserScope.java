@@ -25,7 +25,7 @@ public interface UserScope extends AbstractScope {
         params.put("user_id", userId());
         if (guildId != null) params.put("guild_id", guildId);
         return http().getAsync("/user/view", params)
-                .thenApply(data -> Kook4jCodec.fromJson(data, User.class));
+                .thenApply(data -> http().decode(data, User.class));
     }
 
     default CompletableFuture<JsonElement> intimacyAsync() {
@@ -43,7 +43,7 @@ public interface UserScope extends AbstractScope {
         var body = new JsonObject();
         body.addProperty("target_id", userId());
         return http().postAsync("/user-chat/create", body)
-                .thenApply(data -> Kook4jCodec.fromJson(data, UserChat.class));
+                .thenApply(data -> http().decode(data, UserChat.class));
     }
 
     default CompletableFuture<String> sendDmAsync(String content) {

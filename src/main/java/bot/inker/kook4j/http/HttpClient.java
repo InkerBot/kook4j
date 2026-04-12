@@ -4,6 +4,7 @@ import bot.inker.kook4j.Kook4jCodec;
 import bot.inker.kook4j.exception.*;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.google.gson.reflect.TypeToken;
 import okhttp3.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -241,6 +242,19 @@ public final class HttpClient {
 
     public OkHttpClient okHttpClient() {
         return client;
+    }
+
+    public <T> T decode(JsonElement element, Class<T> type) {
+        return EntityBinder.bindAll(Kook4jCodec.fromJson(element, type), this);
+    }
+
+    public <T> T decode(JsonElement element, TypeToken<T> type) {
+        T value = Kook4jCodec.fromJson(element, type.getType());
+        return EntityBinder.bindAll(value, this);
+    }
+
+    public <T> T bind(T value) {
+        return EntityBinder.bindAll(value, this);
     }
 
     private CompletableFuture<JsonElement> executeAsync(Request request, int attempt) {

@@ -23,8 +23,8 @@ public interface GuildChannelUserScope extends AbstractScope {
                         "page", String.valueOf(page), "page_size", String.valueOf(pageSize)))
                 .thenApply(data -> {
                     var obj = data.getAsJsonObject();
-                    List<Channel> items = Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<Channel>>() {
-                    }.getType());
+                    List<Channel> items = http().decode(obj.get("items"), new TypeToken<>() {
+                    });
                     var meta = Kook4jCodec.fromJson(obj.get("meta"), PagedList.Meta.class);
                     return new PagedList<>(items, meta, (p, ps) -> getJoinedChannelAsync(userId, p, ps));
                 });

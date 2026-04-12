@@ -5,7 +5,7 @@ import bot.inker.kook4j.scope.MessageScope;
 
 import java.util.List;
 
-public final class Message implements MessageScope {
+public final class Message implements MessageScope, Bindable {
 
     private transient volatile HttpClient _http;
 

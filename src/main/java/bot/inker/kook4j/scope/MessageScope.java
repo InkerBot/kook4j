@@ -18,7 +18,7 @@ public interface MessageScope extends AbstractScope {
 
     default CompletableFuture<Message> viewAsync() {
         return http().getAsync("/message/view", Map.of("msg_id", msgId()))
-                .thenApply(data -> Kook4jCodec.fromJson(data, Message.class));
+                .thenApply(data -> http().decode(data, Message.class));
     }
 
     default CompletableFuture<Void> updateAsync(String content) {
@@ -63,8 +63,8 @@ public interface MessageScope extends AbstractScope {
     default CompletableFuture<List<User>> reactionUsersAsync(String emoji) {
         return http().getAsync("/message/reaction-list", Map.of(
                         "msg_id", msgId(), "emoji", emoji))
-                .thenApply(data -> Kook4jCodec.fromJson(data, new TypeToken<List<User>>() {
-                }.getType()));
+                .thenApply(data -> http().<List<User>>decode(data, new TypeToken<>() {
+                }));
     }
 
     default CompletableFuture<Void> pinAsync(String channelId) {

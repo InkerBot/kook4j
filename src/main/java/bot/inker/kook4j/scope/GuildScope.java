@@ -18,7 +18,7 @@ public interface GuildScope extends GuildChannelScope, GuildRoleScope, GuildChan
 
     default CompletableFuture<Guild> viewAsync() {
         return http().getAsync("/guild/view", Map.of("guild_id", guildId()))
-                .thenApply(data -> Kook4jCodec.fromJson(data, Guild.class));
+                .thenApply(data -> http().decode(data, Guild.class));
     }
 
     default CompletableFuture<PagedList<User>> membersAsync() {
@@ -32,8 +32,8 @@ public interface GuildScope extends GuildChannelScope, GuildRoleScope, GuildChan
                 "page_size", String.valueOf(pageSize)
         )).thenApply(data -> {
             var obj = data.getAsJsonObject();
-            List<User> items = Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<User>>() {
-            }.getType());
+            List<User> items = http().decode(obj.get("items"), new TypeToken<>() {
+            });
             var meta = Kook4jCodec.fromJson(obj.get("meta"), PagedList.Meta.class);
             return new PagedList<>(items, meta, this::membersAsync);
         });

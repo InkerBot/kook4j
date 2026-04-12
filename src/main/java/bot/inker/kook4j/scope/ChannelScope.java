@@ -26,14 +26,14 @@ public interface ChannelScope extends AbstractScope {
         return http().getAsync("/channel/view", Map.of(
                 "target_id", channelId(),
                 "need_children", String.valueOf(needChildren)
-        )).thenApply(data -> Kook4jCodec.fromJson(data, Channel.class));
+        )).thenApply(data -> http().decode(data, Channel.class));
     }
 
     default CompletableFuture<Channel> updateAsync(ChannelUpdateRequest request) {
         var body = Kook4jCodec.toJsonObject(request);
         body.addProperty("channel_id", channelId());
         return http().postAsync("/channel/update", body)
-                .thenApply(data -> Kook4jCodec.fromJson(data, Channel.class));
+                .thenApply(data -> http().decode(data, Channel.class));
     }
 
     default CompletableFuture<Void> deleteAsync() {
@@ -67,15 +67,15 @@ public interface ChannelScope extends AbstractScope {
         return http().getAsync("/message/list", params)
                 .thenApply(data -> {
                     var obj = data.getAsJsonObject();
-                    return Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<Message>>() {
-                    }.getType());
+                    return http().<List<Message>>decode(obj.get("items"), new TypeToken<>() {
+                    });
                 });
     }
 
     default CompletableFuture<List<User>> voiceUsersAsync() {
         return http().getAsync("/channel/user-list", Map.of("channel_id", channelId()))
-                .thenApply(data -> Kook4jCodec.fromJson(data, new TypeToken<List<User>>() {
-                }.getType()));
+                .thenApply(data -> http().<List<User>>decode(data, new TypeToken<>() {
+                }));
     }
 
     default CompletableFuture<Void> moveUserAsync(String targetChannelId, List<String> userIds) {

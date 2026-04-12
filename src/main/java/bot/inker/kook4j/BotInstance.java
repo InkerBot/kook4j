@@ -143,14 +143,14 @@ public final class BotInstance {
                 "page_size", String.valueOf(pageSize)
         ));
         var obj = data.getAsJsonObject();
-        List<Guild> items = Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<Guild>>() {
-        }.getType());
+        List<Guild> items = http.decode(obj.get("items"), new TypeToken<>() {
+        });
         var meta = Kook4jCodec.fromJson(obj.get("meta"), PagedList.Meta.class);
         return new PagedList<>(items, meta, this::guildsAsync);
     }
 
     public User me() {
-        return Kook4jCodec.fromJson(http.get("/user/me"), User.class);
+        return http.decode(http.get("/user/me"), User.class);
     }
 
     public PagedList<UserChat> userChats() {
@@ -163,8 +163,8 @@ public final class BotInstance {
                 "page_size", String.valueOf(pageSize)
         ));
         var obj = data.getAsJsonObject();
-        List<UserChat> items = Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<UserChat>>() {
-        }.getType());
+        List<UserChat> items = http.decode(obj.get("items"), new TypeToken<>() {
+        });
         var meta = Kook4jCodec.fromJson(obj.get("meta"), PagedList.Meta.class);
         return new PagedList<>(items, meta, this::userChatsAsync);
     }
@@ -212,8 +212,8 @@ public final class BotInstance {
                 "page_size", String.valueOf(pageSize)
         )).thenApply(data -> {
             var obj = data.getAsJsonObject();
-            List<Guild> items = Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<Guild>>() {
-            }.getType());
+            List<Guild> items = http.decode(obj.get("items"), new TypeToken<>() {
+            });
             var meta = Kook4jCodec.fromJson(obj.get("meta"), PagedList.Meta.class);
             return new PagedList<>(items, meta, this::guildsAsync);
         });
@@ -221,7 +221,7 @@ public final class BotInstance {
 
     public CompletableFuture<User> meAsync() {
         return http.getAsync("/user/me")
-                .thenApply(data -> Kook4jCodec.fromJson(data, User.class));
+                .thenApply(data -> http.decode(data, User.class));
     }
 
     public CompletableFuture<PagedList<UserChat>> userChatsAsync() {
@@ -234,8 +234,8 @@ public final class BotInstance {
                 "page_size", String.valueOf(pageSize)
         )).thenApply(data -> {
             var obj = data.getAsJsonObject();
-            List<UserChat> items = Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<UserChat>>() {
-            }.getType());
+            List<UserChat> items = http.decode(obj.get("items"), new TypeToken<>() {
+            });
             var meta = Kook4jCodec.fromJson(obj.get("meta"), PagedList.Meta.class);
             return new PagedList<>(items, meta, this::userChatsAsync);
         });
@@ -303,6 +303,7 @@ public final class BotInstance {
 
             if (event != null) {
                 event.inject(this, channelType, targetId, authorId, msgId, msgTimestamp, nonce);
+                http.bind(event);
                 eventBus.dispatch(event);
             }
         } catch (Exception e) {

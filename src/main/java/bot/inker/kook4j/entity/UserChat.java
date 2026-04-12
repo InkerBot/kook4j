@@ -3,7 +3,7 @@ package bot.inker.kook4j.entity;
 import bot.inker.kook4j.http.HttpClient;
 import bot.inker.kook4j.scope.UserChatScope;
 
-public final class UserChat implements UserChatScope {
+public final class UserChat implements UserChatScope, Bindable {
 
     private transient volatile HttpClient _http;
 

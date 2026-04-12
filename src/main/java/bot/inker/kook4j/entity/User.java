@@ -5,7 +5,7 @@ import bot.inker.kook4j.scope.UserScope;
 
 import java.util.List;
 
-public final class User implements UserScope {
+public final class User implements UserScope, Bindable {
 
     private transient volatile HttpClient _http;
 

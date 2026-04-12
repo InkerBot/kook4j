@@ -5,7 +5,7 @@ import bot.inker.kook4j.scope.ChannelScope;
 
 import java.util.List;
 
-public final class Channel implements ChannelScope {
+public final class Channel implements ChannelScope, Bindable {
 
     private transient volatile HttpClient _http;
 

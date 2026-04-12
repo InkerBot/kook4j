@@ -17,7 +17,7 @@ public record DmMessageScope(HttpClient http, String chatCode, String msgId) imp
     public CompletableFuture<Message> viewAsync() {
         return http.getAsync("/direct-message/view", Map.of(
                         "chat_code", chatCode, "msg_id", msgId))
-                .thenApply(data -> Kook4jCodec.fromJson(data, Message.class));
+                .thenApply(data -> http.decode(data, Message.class));
     }
 
     public CompletableFuture<Void> updateAsync(String content) {
@@ -62,8 +62,8 @@ public record DmMessageScope(HttpClient http, String chatCode, String msgId) imp
     public CompletableFuture<List<User>> reactionsAsync(String emoji) {
         return http.getAsync("/direct-message/reaction-list", Map.of(
                         "msg_id", msgId, "emoji", emoji))
-                .thenApply(data -> Kook4jCodec.fromJson(data, new TypeToken<List<User>>() {
-                }.getType()));
+                .thenApply(data -> http.<List<User>>decode(data, new TypeToken<>() {
+                }));
     }
 
     public Message view() {

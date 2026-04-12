@@ -5,7 +5,7 @@ import bot.inker.kook4j.scope.GuildScope;
 
 import java.util.List;
 
-public final class Guild implements GuildScope {
+public final class Guild implements GuildScope, Bindable {
 
     private transient volatile HttpClient _http;
 

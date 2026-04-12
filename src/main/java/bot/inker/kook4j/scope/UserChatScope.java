@@ -17,7 +17,7 @@ public interface UserChatScope extends AbstractScope {
 
     default CompletableFuture<UserChat> viewAsync() {
         return http().getAsync("/user-chat/view", Map.of("chat_code", chatCode()))
-                .thenApply(data -> Kook4jCodec.fromJson(data, UserChat.class));
+                .thenApply(data -> http().decode(data, UserChat.class));
     }
 
     default CompletableFuture<Void> deleteAsync() {
@@ -40,8 +40,8 @@ public interface UserChatScope extends AbstractScope {
         return http().getAsync("/direct-message/list", params)
                 .thenApply(data -> {
                     var obj = data.getAsJsonObject();
-                    return Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<Message>>() {
-                    }.getType());
+                    return http().<List<Message>>decode(obj.get("items"), new TypeToken<>() {
+                    });
                 });
     }
 

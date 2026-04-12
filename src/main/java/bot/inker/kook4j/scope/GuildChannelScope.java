@@ -31,8 +31,8 @@ public interface GuildChannelScope extends AbstractScope {
         if (type != null) params.put("type", String.valueOf(type.value()));
         return http().getAsync("/channel/list", params).thenApply(data -> {
             var obj = data.getAsJsonObject();
-            List<Channel> items = Kook4jCodec.fromJson(obj.get("items"), new TypeToken<List<Channel>>() {
-            }.getType());
+            List<Channel> items = http().decode(obj.get("items"), new TypeToken<>() {
+            });
             var meta = Kook4jCodec.fromJson(obj.get("meta"), PagedList.Meta.class);
             return new PagedList<>(items, meta, (p, ps) -> listChannelsAsync(type, p, ps));
         });
@@ -42,7 +42,7 @@ public interface GuildChannelScope extends AbstractScope {
         var body = Kook4jCodec.toJsonObject(request);
         body.addProperty("guild_id", guildId());
         return http().postAsync("/channel/create", body)
-                .thenApply(data -> Kook4jCodec.fromJson(data, Channel.class));
+                .thenApply(data -> http().decode(data, Channel.class));
     }
 
     default PagedList<Channel> listChannels() {
