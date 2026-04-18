@@ -5,12 +5,13 @@ import bot.inker.kook4j.BotInstance;
 public abstract class Event {
 
     private transient BotInstance bot;
-    private String channelType;
-    private String targetId;
-    private String authorId;
-    private String msgId;
-    private long msgTimestamp;
-    private String nonce;
+    // These envelope fields are injected after body parsing, so Gson must ignore them.
+    private transient String channelType;
+    private transient String targetId;
+    private transient String authorId;
+    private transient String msgId;
+    private transient long msgTimestamp;
+    private transient String nonce;
 
     protected Event() {
     }
