@@ -21,23 +21,25 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.zip.Inflater;
 
 public final class KookWebSocket extends WebSocketListener {
 
     private static final Logger log = LoggerFactory.getLogger(KookWebSocket.class);
-    private static final int HEARTBEAT_INTERVAL_MS = 30_000;
-    private static final int HELLO_TIMEOUT_MS = 6_000;
-    private static final int MAX_RETRY_DELAY_MS = 60_000;
+    private static final int DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
+    private static final int DEFAULT_PONG_TIMEOUT_MS = 6_000;
+    private static final int DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 
-    private final BotInstance bot;
+    private final Consumer<JsonObject> eventDispatcher;
     private final HttpClient httpClient;
     private final boolean compress;
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        var t = new Thread(r, "kook4j-heartbeat");
-        t.setDaemon(true);
-        return t;
-    });
+    private final GatewayConnector connector;
+    private final int heartbeatIntervalMs;
+    private final int pongTimeoutMs;
+    private final int maxRetryDelayMs;
+    private final Object lifecycleLock = new Object();
+    private ScheduledExecutorService scheduler = newScheduler();
     private volatile WebSocket webSocket;
     private volatile String sessionId;
     private volatile int lastSn;
@@ -45,27 +47,48 @@ public final class KookWebSocket extends WebSocketListener {
     private ScheduledFuture<?> heartbeatFuture;
     private ScheduledFuture<?> pongTimeoutFuture;
     private int retryCount;
+    private CloseAction closeAction = CloseAction.NONE;
 
     public KookWebSocket(BotInstance bot, HttpClient httpClient, boolean compress) {
-        this.bot = bot;
+        this(bot::dispatchEvent, httpClient, compress, defaultConnector(httpClient),
+                DEFAULT_HEARTBEAT_INTERVAL_MS, DEFAULT_PONG_TIMEOUT_MS, DEFAULT_MAX_RETRY_DELAY_MS);
+    }
+
+    KookWebSocket(Consumer<JsonObject> eventDispatcher, HttpClient httpClient, boolean compress,
+                  GatewayConnector connector, int heartbeatIntervalMs, int pongTimeoutMs, int maxRetryDelayMs) {
+        this.eventDispatcher = eventDispatcher;
         this.httpClient = httpClient;
         this.compress = compress;
+        this.connector = connector;
+        this.heartbeatIntervalMs = heartbeatIntervalMs;
+        this.pongTimeoutMs = pongTimeoutMs;
+        this.maxRetryDelayMs = maxRetryDelayMs;
     }
 
     public void connect() {
         active = true;
         retryCount = 0;
+        ensureScheduler();
         doConnect(false);
     }
 
     public void disconnect() {
         active = false;
         stopHeartbeat();
-        if (webSocket != null) {
-            webSocket.close(1000, "Client disconnect");
-            webSocket = null;
+        WebSocket ws;
+        ScheduledExecutorService executor;
+        synchronized (lifecycleLock) {
+            closeAction = CloseAction.STOP;
+            ws = webSocket;
+            executor = scheduler;
+            scheduler = null;
         }
-        scheduler.shutdownNow();
+        if (ws != null) {
+            ws.close(1000, "Client disconnect");
+        }
+        if (executor != null) {
+            executor.shutdownNow();
+        }
     }
 
     private void doConnect(boolean resume) {
@@ -78,8 +101,10 @@ public final class KookWebSocket extends WebSocketListener {
             }
 
             log.info("Connecting to Kook gateway{}...", resume ? " (resume)" : "");
-            var request = new Request.Builder().url(url).build();
-            webSocket = httpClient.okHttpClient().newWebSocket(request, this);
+            synchronized (lifecycleLock) {
+                closeAction = CloseAction.NONE;
+            }
+            webSocket = connector.connect(url, this);
         } catch (Exception e) {
             log.error("Failed to get gateway URL", e);
             scheduleReconnect();
@@ -88,16 +113,19 @@ public final class KookWebSocket extends WebSocketListener {
 
     @Override
     public void onOpen(WebSocket ws, Response response) {
+        if (ws != webSocket) return;
         log.debug("WebSocket opened");
     }
 
     @Override
     public void onMessage(WebSocket ws, String text) {
+        if (ws != webSocket) return;
         handleMessage(text);
     }
 
     @Override
     public void onMessage(WebSocket ws, okio.ByteString bytes) {
+        if (ws != webSocket) return;
         if (compress) {
             try {
                 handleMessage(decompress(bytes.toByteArray()));
@@ -111,26 +139,23 @@ public final class KookWebSocket extends WebSocketListener {
 
     @Override
     public void onFailure(WebSocket ws, Throwable t, Response response) {
+        if (ws != webSocket) return;
         log.error("WebSocket failure", t);
-        stopHeartbeat();
-        if (active) {
-            scheduleReconnect();
-        }
+        handleSocketTerminated(ws);
     }
 
     @Override
     public void onClosing(WebSocket ws, int code, String reason) {
+        if (ws != webSocket) return;
         log.info("WebSocket closing: {} {}", code, reason);
         ws.close(code, reason);
     }
 
     @Override
     public void onClosed(WebSocket ws, int code, String reason) {
+        if (ws != webSocket) return;
         log.info("WebSocket closed: {} {}", code, reason);
-        stopHeartbeat();
-        if (active) {
-            scheduleReconnect();
-        }
+        handleSocketTerminated(ws);
     }
 
     private void handleMessage(String json) {
@@ -164,7 +189,7 @@ public final class KookWebSocket extends WebSocketListener {
                 default -> new KookWebSocketException("WebSocket HELLO failed (code=" + code + ")");
             };
             log.error("WebSocket HELLO failed", cause);
-            webSocket.close(1000, "Hello failed");
+            requestClose(CloseAction.TERMINAL, "Hello failed", false);
             return;
         }
 
@@ -181,13 +206,15 @@ public final class KookWebSocket extends WebSocketListener {
         }
 
         var data = obj.getAsJsonObject("d");
-        bot.dispatchEvent(data);
+        eventDispatcher.accept(data);
     }
 
     private void handlePong() {
-        if (pongTimeoutFuture != null) {
-            pongTimeoutFuture.cancel(false);
-            pongTimeoutFuture = null;
+        synchronized (lifecycleLock) {
+            if (pongTimeoutFuture != null) {
+                pongTimeoutFuture.cancel(false);
+                pongTimeoutFuture = null;
+            }
         }
     }
 
@@ -205,54 +232,62 @@ public final class KookWebSocket extends WebSocketListener {
         }
         sessionId = null;
         lastSn = 0;
-        if (webSocket != null) {
-            webSocket.close(1000, "Server reconnect");
-        }
-        stopHeartbeat();
-        doConnect(false);
+        requestClose(CloseAction.RECONNECT_FRESH, "Server reconnect", true);
     }
 
     private void startHeartbeat() {
         stopHeartbeat();
-        heartbeatFuture = scheduler.scheduleAtFixedRate(this::sendPing,
-                HEARTBEAT_INTERVAL_MS, HEARTBEAT_INTERVAL_MS, TimeUnit.MILLISECONDS);
+        synchronized (lifecycleLock) {
+            heartbeatFuture = ensureScheduler().scheduleAtFixedRate(this::sendPing,
+                    heartbeatIntervalMs, heartbeatIntervalMs, TimeUnit.MILLISECONDS);
+        }
     }
 
     private void stopHeartbeat() {
-        if (heartbeatFuture != null) {
-            heartbeatFuture.cancel(false);
-            heartbeatFuture = null;
-        }
-        if (pongTimeoutFuture != null) {
-            pongTimeoutFuture.cancel(false);
-            pongTimeoutFuture = null;
+        synchronized (lifecycleLock) {
+            stopHeartbeatLocked();
         }
     }
 
     private void sendPing() {
-        if (webSocket == null) return;
+        WebSocket ws;
+        synchronized (lifecycleLock) {
+            if (!active || webSocket == null || closeAction != CloseAction.NONE) return;
+            ws = webSocket;
+        }
 
         var ping = new JsonObject();
         ping.addProperty("s", Signal.PING.value());
         ping.addProperty("sn", lastSn);
-        webSocket.send(ping.toString());
+        if (!ws.send(ping.toString())) {
+            log.warn("Ping send failed, reconnecting...");
+            requestClose(CloseAction.RECONNECT_RESUME, "Ping send failed", true);
+            return;
+        }
 
-        pongTimeoutFuture = scheduler.schedule(() -> {
+        var timeoutFuture = ensureScheduler().schedule(() -> {
             log.warn("Pong timeout, reconnecting...");
-            if (webSocket != null) {
-                webSocket.close(1000, "Pong timeout");
+            requestClose(CloseAction.RECONNECT_RESUME, "Pong timeout", true);
+        }, pongTimeoutMs, TimeUnit.MILLISECONDS);
+
+        synchronized (lifecycleLock) {
+            if (ws != webSocket || closeAction != CloseAction.NONE) {
+                timeoutFuture.cancel(false);
+                return;
             }
-            stopHeartbeat();
-            doConnect(true);
-        }, HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            if (pongTimeoutFuture != null) {
+                pongTimeoutFuture.cancel(false);
+            }
+            pongTimeoutFuture = timeoutFuture;
+        }
     }
 
     private void scheduleReconnect() {
         if (!active) return;
-        var delay = Math.min((long) Math.pow(2, retryCount) * 1000, MAX_RETRY_DELAY_MS);
+        var delay = Math.min((long) Math.pow(2, retryCount) * 1000, maxRetryDelayMs);
         retryCount++;
         log.info("Reconnecting in {}ms (attempt {})", delay, retryCount);
-        scheduler.schedule(() -> doConnect(sessionId != null), delay, TimeUnit.MILLISECONDS);
+        ensureScheduler().schedule(() -> doConnect(sessionId != null), delay, TimeUnit.MILLISECONDS);
     }
 
     private String decompress(byte[] data) throws IOException {
@@ -272,5 +307,109 @@ public final class KookWebSocket extends WebSocketListener {
             inflater.end();
         }
         return out.toString(StandardCharsets.UTF_8);
+    }
+
+    private static ScheduledExecutorService newScheduler() {
+        return Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "kook4j-heartbeat");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    private static GatewayConnector defaultConnector(HttpClient httpClient) {
+        return (url, listener) -> {
+            var request = new Request.Builder().url(url).build();
+            return httpClient.okHttpClient().newWebSocket(request, listener);
+        };
+    }
+
+    private ScheduledExecutorService ensureScheduler() {
+        synchronized (lifecycleLock) {
+            if (scheduler == null || scheduler.isShutdown()) {
+                scheduler = newScheduler();
+            }
+            return scheduler;
+        }
+    }
+
+    private void stopHeartbeatLocked() {
+        if (heartbeatFuture != null) {
+            heartbeatFuture.cancel(false);
+            heartbeatFuture = null;
+        }
+        if (pongTimeoutFuture != null) {
+            pongTimeoutFuture.cancel(false);
+            pongTimeoutFuture = null;
+        }
+    }
+
+    private void requestClose(CloseAction action, String reason, boolean keepActive) {
+        WebSocket ws;
+        synchronized (lifecycleLock) {
+            if (!keepActive) {
+                active = false;
+            }
+            stopHeartbeatLocked();
+            closeAction = action;
+            ws = webSocket;
+        }
+        if (ws == null) {
+            synchronized (lifecycleLock) {
+                closeAction = CloseAction.NONE;
+            }
+            completeCloseAction(action);
+            return;
+        }
+        if (!ws.close(1000, reason)) {
+            handleSocketTerminated(ws);
+        }
+    }
+
+    private void handleSocketTerminated(WebSocket ws) {
+        CloseAction action;
+        synchronized (lifecycleLock) {
+            if (ws != webSocket) return;
+            stopHeartbeatLocked();
+            webSocket = null;
+            action = closeAction;
+            closeAction = CloseAction.NONE;
+        }
+        completeCloseAction(action);
+    }
+
+    private void completeCloseAction(CloseAction action) {
+        switch (action) {
+            case RECONNECT_RESUME -> {
+                if (active) {
+                    doConnect(true);
+                }
+            }
+            case RECONNECT_FRESH -> {
+                if (active) {
+                    doConnect(false);
+                }
+            }
+            case NONE -> {
+                if (active) {
+                    scheduleReconnect();
+                }
+            }
+            case STOP, TERMINAL -> {
+            }
+        }
+    }
+
+    @FunctionalInterface
+    interface GatewayConnector {
+        WebSocket connect(String url, WebSocketListener listener);
+    }
+
+    private enum CloseAction {
+        NONE,
+        STOP,
+        TERMINAL,
+        RECONNECT_FRESH,
+        RECONNECT_RESUME
     }
 }

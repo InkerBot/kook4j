@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -206,33 +207,7 @@ public final class HttpClient {
                 .header("Authorization", "Bot " + token)
                 .get()
                 .build();
-        var future = new CompletableFuture<byte[]>();
-        client.newCall(request).enqueue(new Callback() {
-            @Override
-            public void onFailure(Call call, IOException e) {
-                future.completeExceptionally(
-                        new KookConnectionException("HTTP request failed: " + e.getMessage(), e));
-            }
-
-            @Override
-            public void onResponse(Call call, Response response) {
-                try (response) {
-                    var responseBody = response.body();
-                    if (responseBody == null) {
-                        future.completeExceptionally(
-                                new KookConnectionException("Empty response body"));
-                        return;
-                    }
-                    try {
-                        future.complete(responseBody.bytes());
-                    } catch (IOException e) {
-                        future.completeExceptionally(
-                                new KookConnectionException("Failed to read response body", e));
-                    }
-                }
-            }
-        });
-        return future;
+        return executeRawBytesAsync(request, 0);
     }
 
     public CompletableFuture<String> getGatewayUrlAsync(boolean compress) {
@@ -325,5 +300,107 @@ public final class HttpClient {
 
             return future;
         });
+    }
+
+    private CompletableFuture<byte[]> executeRawBytesAsync(Request request, int attempt) {
+        var bucket = RateLimiter.bucketFromPath(request.url().encodedPath());
+
+        return rateLimiter.acquirePermitAsync(bucket).thenCompose(__ -> {
+            var future = new CompletableFuture<byte[]>();
+
+            client.newCall(request).enqueue(new Callback() {
+                @Override
+                public void onFailure(Call call, IOException e) {
+                    future.completeExceptionally(
+                            new KookConnectionException("HTTP request failed: " + e.getMessage(), e));
+                }
+
+                @Override
+                public void onResponse(Call call, Response response) {
+                    try (response) {
+                        rateLimiter.update(response);
+                        var httpCode = response.code();
+
+                        if (httpCode == 429) {
+                            if (attempt >= MAX_RETRIES) {
+                                future.completeExceptionally(buildRateLimitException(response));
+                                return;
+                            }
+                            var retryMs = rateLimiter.getRetryAfterMs(response);
+                            log.warn("Rate limited on {} (attempt {}/{}), retrying in {}ms",
+                                    bucket, attempt + 1, MAX_RETRIES, retryMs);
+                            rateLimiter.delayAsync(retryMs)
+                                    .thenCompose(___ -> executeRawBytesAsync(request, attempt + 1))
+                                    .whenComplete((result, ex) -> {
+                                        if (ex != null) future.completeExceptionally(ex);
+                                        else future.complete(result);
+                                    });
+                            return;
+                        }
+
+                        var responseBody = response.body();
+                        if (responseBody == null) {
+                            future.completeExceptionally(mapHttpStatus(httpCode, -1, "Empty response body"));
+                            return;
+                        }
+
+                        MediaType contentType = responseBody.contentType();
+                        byte[] responseBytes;
+                        try {
+                            responseBytes = responseBody.bytes();
+                        } catch (IOException e) {
+                            future.completeExceptionally(
+                                    new KookConnectionException("Failed to read response body", e));
+                            return;
+                        }
+
+                        if (httpCode < 200 || httpCode >= 300) {
+                            future.completeExceptionally(mapRawBytesError(httpCode, responseBytes));
+                            return;
+                        }
+
+                        if (isJsonContentType(contentType)) {
+                            var apiError = tryMapApiError(httpCode, responseBytes);
+                            if (apiError != null) {
+                                future.completeExceptionally(apiError);
+                                return;
+                            }
+                        }
+
+                        future.complete(responseBytes);
+                    } catch (Exception e) {
+                        future.completeExceptionally(e);
+                    }
+                }
+            });
+
+            return future;
+        });
+    }
+
+    private static boolean isJsonContentType(MediaType contentType) {
+        if (contentType == null) return false;
+        var subtype = contentType.subtype();
+        return subtype != null && subtype.toLowerCase().contains("json");
+    }
+
+    private static KookApiException mapRawBytesError(int httpCode, byte[] responseBytes) {
+        var apiError = tryMapApiError(httpCode, responseBytes);
+        if (apiError != null) {
+            return apiError;
+        }
+        return mapHttpStatus(httpCode, -1, "HTTP request failed with status " + httpCode);
+    }
+
+    private static KookApiException tryMapApiError(int httpCode, byte[] responseBytes) {
+        try {
+            var body = new String(responseBytes, StandardCharsets.UTF_8);
+            var apiResponse = Kook4jCodec.fromJson(body, ApiResponse.class);
+            if (apiResponse != null && !apiResponse.success()) {
+                return mapApiCode(httpCode, apiResponse.code(), apiResponse.message());
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 }

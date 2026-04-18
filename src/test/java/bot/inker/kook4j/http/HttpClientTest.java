@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import okhttp3.*;
 import org.junit.jupiter.api.Test;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -32,6 +33,7 @@ class HttpClientTest {
     private static final String RATE_LIMIT_JSON = """
             {"code":40007,"message":"请求过于频繁","data":{}}
             """;
+    private static final byte[] BADGE_BYTES = "<svg>badge</svg>".getBytes(StandardCharsets.UTF_8);
 
     private HttpClient clientWith(int httpCode, String json) {
         return clientWith(httpCode, json, Map.of());
@@ -265,6 +267,89 @@ class HttpClientTest {
         assertNotNull(syncResult);
         assertNotNull(asyncResult);
         assertEquals(syncResult, asyncResult);
+    }
+
+    @Test
+    void getRawBytes_returnsBytes_onSuccess() {
+        var okClient = new OkHttpClient.Builder()
+                .addInterceptor(chain -> new Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200).message("OK")
+                        .body(ResponseBody.create(BADGE_BYTES, MediaType.get("image/svg+xml")))
+                        .build())
+                .build();
+
+        var client = new HttpClient(okClient, "test-token");
+        assertArrayEquals(BADGE_BYTES, client.getRawBytes("/badge/guild", Map.of("guild_id", "123")));
+    }
+
+    @Test
+    void getRawBytes_throwsKookUnauthorizedException_on401() {
+        var client = clientWith(401, UNAUTHORIZED_JSON,
+                Map.of("Content-Type", "application/json; charset=utf-8"));
+        assertThrows(KookUnauthorizedException.class,
+                () -> client.getRawBytes("/badge/guild", Map.of("guild_id", "123")));
+    }
+
+    @Test
+    void getRawBytes_throwsKookNotFoundException_on404() {
+        var client = clientWith(404, NOT_FOUND_JSON,
+                Map.of("Content-Type", "application/json; charset=utf-8"));
+        assertThrows(KookNotFoundException.class,
+                () -> client.getRawBytes("/badge/guild", Map.of("guild_id", "123")));
+    }
+
+    @Test
+    void getRawBytes_retriesOnce_andSucceeds_after429() {
+        var callCount = new AtomicInteger(0);
+        var okClient = new OkHttpClient.Builder()
+                .addInterceptor(chain -> {
+                    int n = callCount.incrementAndGet();
+                    if (n == 1) {
+                        return new Response.Builder()
+                                .request(chain.request())
+                                .protocol(Protocol.HTTP_1_1)
+                                .code(429).message("Rate Limited")
+                                .header("X-Rate-Limit-Bucket", "badge")
+                                .header("X-Rate-Limit-Limit", "5")
+                                .header("X-Rate-Limit-Remaining", "0")
+                                .header("X-Rate-Limit-Reset", "0")
+                                .body(ResponseBody.create(RATE_LIMIT_JSON, MediaType.get("application/json")))
+                                .build();
+                    }
+                    return new Response.Builder()
+                            .request(chain.request())
+                            .protocol(Protocol.HTTP_1_1)
+                            .code(200).message("OK")
+                            .body(ResponseBody.create(BADGE_BYTES, MediaType.get("image/svg+xml")))
+                            .build();
+                })
+                .build();
+
+        var client = new HttpClient(okClient, "test-token");
+        assertArrayEquals(BADGE_BYTES, client.getRawBytes("/badge/guild", Map.of("guild_id", "123")));
+        assertEquals(2, callCount.get(), "Expected exactly 1 retry for raw bytes");
+    }
+
+    @Test
+    void getRawBytes_throwsKookRateLimitException_afterMaxRetries() {
+        var okClient = new OkHttpClient.Builder()
+                .addInterceptor(chain -> new Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(429).message("Rate Limited")
+                        .header("X-Rate-Limit-Bucket", "badge")
+                        .header("X-Rate-Limit-Limit", "5")
+                        .header("X-Rate-Limit-Remaining", "0")
+                        .header("X-Rate-Limit-Reset", "0")
+                        .body(ResponseBody.create(RATE_LIMIT_JSON, MediaType.get("application/json")))
+                        .build())
+                .build();
+
+        var client = new HttpClient(okClient, "test-token");
+        assertThrows(KookRateLimitException.class,
+                () -> client.getRawBytes("/badge/guild", Map.of("guild_id", "123")));
     }
 
     @Test
